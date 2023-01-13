@@ -14,7 +14,7 @@ pipenv install --dev
 
 ## Usage
 
-Run a script by doing:
+Run the reduction script by doing:
 ```sh
 pipenv run reduct
 ```
