@@ -19,6 +19,8 @@ Run the reduction script by doing:
 pipenv run reduct
 ```
 
+This will run the analysis of the execution time of the parallel reduction algorithm depending on the number of workers. It will save the results in the `metrics` folder and show a plot of the results for each dataset.
+
 ## Credits
 
 Romain Monier [ [GitHub](https://github.com/rmonier) ] – Developer

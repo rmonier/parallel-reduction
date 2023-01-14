@@ -1,1 +1,5 @@
 .lithops_config
+
+# Metrics artifacts
+metrics/*
+!metrics/README.md
