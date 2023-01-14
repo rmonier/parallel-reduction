@@ -12,6 +12,11 @@ Install the dependencies by doing:
 pipenv install --dev
 ```
 
+Fill the Cloud configuration file with your credentials and parameters to be able to use the Cloud services:
+```sh
+cp .lithops_config.template .lithops_config
+```
+
 ## Usage
 
 Run the reduction script by doing:
