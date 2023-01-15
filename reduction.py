@@ -108,6 +108,7 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
 
     # If df size of one chunk in MiB is > 4MiB,
     # we need to split the dataset into more chunks that will be processed by the same number of workers previously defined
+    print("> Checking the chunk size...")
     recompute_chunk_size = False
     for i in range(0, chunk_size-1, chunk_size):
         if get_mib_size(df.iloc[i:i+chunk_size]) > max_mib_chunk_size:
