@@ -92,6 +92,8 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
 
     row_size = df.shape[0]
     chunk_size = row_size // number_workers
+    if chunk_size <= 0:
+        chunk_size = 1
     workload_for_each_worker = 1
     add_last_chunk = False
 
@@ -101,10 +103,22 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
         # Generate the public and private keys for the Paillier cryptosystem
         print("> Generating public and private keys for the Paillier cryptosystem...")
         public_key, private_key = paillier.generate_paillier_keypair()
-
+        
         # Encrypt the cost column using the Paillier cryptosystem
-        print("> Encrypting the cost column...")
-        df['cost'] = df['cost'].apply(lambda x: encode_cipher_json(x, public_key))
+        encrypt_str = "> Encrypting the cost column (can take a long time)..."
+        print(encrypt_str, end="", flush=True)
+        cost_size = df['cost'].size
+        current_cost = 0
+        print(f"\r{encrypt_str} {(current_cost/cost_size*100):.2f} %", end="", flush=True)
+        def encrypt_cost(x, public_key):
+            enc = encode_cipher_json(x, public_key)
+            nonlocal current_cost
+            current_cost += 1
+            print(f"\r{encrypt_str} {(current_cost/cost_size*100):.2f} %", end="", flush=True)
+            return enc
+
+        df['cost'] = df['cost'].apply(lambda x: encrypt_cost(x, public_key))
+        print("")
 
     # If df size of one chunk in MiB is > 4MiB,
     # we need to split the dataset into more chunks that will be processed by the same number of workers previously defined
@@ -170,9 +184,21 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
     
     if encryption:
         # Decrypt the cost
-        print("> Decrypting the cost column...")
-        result_df['cost'] = result_df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
-        result_df['cost'] = result_df['cost'].apply(lambda x: round(private_key.decrypt(x), 2))
+        decrypt_str = "> Decrypting the cost column..."
+        print(decrypt_str, end="", flush=True)
+        cost_size = result_df['cost'].size
+        current_cost = 0
+        print(f"\r{decrypt_str} {(current_cost/cost_size*100):.2f} %", end="", flush=True)
+        def decrypt_cost(x, public_key, private_key):
+            dec = decode_cipher_json(x, public_key)
+            dec = round(private_key.decrypt(dec), 2)
+            nonlocal current_cost
+            current_cost += 1
+            print(f"\r{decrypt_str} {(current_cost/cost_size*100):.2f} %", end="", flush=True)
+            return dec
+
+        result_df['cost'] = result_df['cost'].apply(lambda x: decrypt_cost(x, public_key, private_key))
+        print("")
 
     # Filter the entries to find the customers who have spent more than $5k
     result_df = result_df[result_df['cost'] > 5000].reset_index(drop=True)
