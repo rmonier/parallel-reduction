@@ -14,6 +14,8 @@ print(f"> Bucket name: {bucket_name}")
 key = 'dataframe'
 
 def groupby_sum_for_cipher(df, group_col, sum_col):
+    # We are using a custom groupby sum function because the default one is not working with Paillier cipher
+    # We need to add the encrypted costs with the + operator directly
     result = {}
     for _, row in df.iterrows():
         group = row[group_col]
@@ -102,7 +104,7 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
     if encryption:
         # Generate the public and private keys for the Paillier cryptosystem
         print("> Generating public and private keys for the Paillier cryptosystem...")
-        public_key, private_key = paillier.generate_paillier_keypair()
+        public_key, private_key = paillier.generate_paillier_keypair(n_length=128)  # We should use a 2048-bit key to be secure, but as it takes a long time to encrypt, we will use a 128-bit key for this project
         
         # Encrypt the cost column using the Paillier cryptosystem
         encrypt_str = "> Encrypting the cost column (can take a long time)..."
