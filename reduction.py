@@ -174,11 +174,13 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
 
     print(f"> Repartition of the chunks for each worker (map_iterdata): \t\t\t{indexes_iterdata}")
 
+    base64_key = "" if not encryption else int_to_base64(public_key.n)
+
     # Start the timer
     start_time = time.time()
 
     # Perform the parallel reduction
-    futures = fexec.map_reduce(map, indexes_iterdata, reduce, extra_args=(encryption, "" if not encryption else int_to_base64(public_key.n)))
+    futures = fexec.map_reduce(map, indexes_iterdata, reduce, extra_args=(encryption, base64_key))
     result_df = fexec.get_result(futures)
 
     # Get the workers' execution time
