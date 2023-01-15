@@ -171,7 +171,7 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
         # Decrypt the cost
         print("> Decrypting the cost column...")
         result_df['cost'] = result_df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
-        result_df['cost'] = result_df['cost'].apply(lambda x: private_key.decrypt(x))
+        result_df['cost'] = result_df['cost'].apply(lambda x: round(private_key.decrypt(x), 2))
 
     # Filter the entries to find the customers who have spent more than $5k
     result_df = result_df[result_df['cost'] > 5000].reset_index(drop=True)
