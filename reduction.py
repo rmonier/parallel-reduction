@@ -245,7 +245,7 @@ def main():
             print()
 
     # Save the metrics to a csv file
-    df_metrics.to_csv('metrics/metrics.csv', index=False)
+    df_metrics.to_csv(f'metrics/metrics{"" if not args.encrypt else "-encrypted"}.csv', index=False)
 
     # Plot the metrics
     for dataset in df_metrics['dataset'].unique():
