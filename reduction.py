@@ -1,40 +1,78 @@
 import pandas as pd
 import lithops
 from phe import paillier
+from phe.util import int_to_base64, base64_to_int
 import pathlib
 import matplotlib.pyplot as plt
 import itertools
 import time
+import json
 
 bucket_name = lithops.Storage().bucket
 print(f"> Bucket name: {bucket_name}")
 key = 'dataframe'
 
-def map(indexes, storage):
+def map(indexes, encryption, n_public_key, storage):
+    encrypt_data = {"encryption": encryption, "n_public_key": n_public_key}
+    if encrypt_data["encryption"]:
+        print(f"> Map function called with n_public_key: {encrypt_data['n_public_key']}")
+        import phe
+        public_key = paillier.PaillierPublicKey(n=base64_to_int(encrypt_data['n_public_key']))
     subkeys = []
     for id in indexes:
         # Get the dataset from the storage backend (less than 4MiB to avoid MemoryError (IBM Cloud))
-        df = pd.read_json(storage.get_object(bucket_name, f"{key}_{id}", stream=True), orient='split')
+        df = pd.read_json(storage.get_object(bucket_name, f"{key}_{id}", stream=True), orient='split', dtype={'customer_id': int, 'cost': str} if encrypt_data["encryption"] else None)
+        if encrypt_data["encryption"]:
+            print(df)
+            # Get the Paillier cipher for the cost column
+            df['cost'] = df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
+            print(df)
+            print(df[0]["cost"] + df[1]["cost"])
         # Compute the sum of the cost column for each customer for the current chunk
         df = df.groupby("customer_id", as_index=False).sum("cost")
+        if encrypt_data["encryption"]:
+            print(df)
+            df['cost'] = df['cost'].apply(lambda x: get_json_for_cipher(x))
         # Save the result to the storage backend
         subkey = f"map_{key}_{id}"
         storage.put_object(bucket_name, subkey, df.to_json(orient='split'))
         subkeys.append(subkey)
-    return subkeys
+    return {"encrypt_data": encrypt_data, "subkeys": subkeys}
 
 def reduce(results, storage):
-    files = list(itertools.chain(*results))
+    encrypt_data = results[0]["encrypt_data"]  # We assume that all the workers will have the same encryption data
+    subkeys = [item['subkeys'] for item in results]  # We extract the subkeys from the results
+    if encrypt_data["encryption"]:
+        import phe
+        public_key = paillier.PaillierPublicKey(n=base64_to_int(encrypt_data["n_public_key"]))
+    files = list(itertools.chain(*subkeys))
     # Read the files and concatenate them into a single dataframe (should be less than the 4MiB limit after the map phase)
     df = pd.concat([pd.read_json(storage.get_object(bucket_name, f, stream=True), orient='split') for f in files])
+    if encrypt_data["encryption"]:
+        # Get the Paillier cipher for the cost column
+        df['cost'] = df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
+        print(df)
     # Compute the sum of the cost column for each customer for the entire dataset
     df = df.groupby("customer_id", as_index=False).sum("cost")
+    if encrypt_data["encryption"]:
+        df['cost'] = df['cost'].apply(lambda x: get_json_for_cipher(x))
     return df
 
 def get_mib_size(df):
     return df.memory_usage(index=True, deep=True).sum() / 1024 / 1024
 
-def execute(dataset, number_workers, max_mib_chunk_size=4):
+def get_json_for_cipher(cipher):
+    return json.dumps((int_to_base64(cipher.ciphertext()), cipher.exponent))
+
+def encode_cipher_json(number, public_key):
+    enc = public_key.encrypt(number, precision=1e-2)
+    return get_json_for_cipher(enc)
+
+def decode_cipher_json(value, public_key):
+    value = json.loads(value)
+    return paillier.EncryptedNumber(public_key, ciphertext=base64_to_int(value[0]), exponent=int(value[1]))
+
+def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
     df = pd.read_csv(dataset)
 
     storage = lithops.Storage()
@@ -46,6 +84,17 @@ def execute(dataset, number_workers, max_mib_chunk_size=4):
     chunk_size = row_size // number_workers
     workload_for_each_worker = 1
     add_last_chunk = False
+
+    print("> Paillier Encryption: " + ("ON" if encryption else "OFF"))
+
+    if encryption:
+        # Generate the public and private keys for the Paillier cryptosystem
+        print("> Generating public and private keys for the Paillier cryptosystem...")
+        public_key, private_key = paillier.generate_paillier_keypair()
+
+        # Encrypt the cost column using the Paillier cryptosystem
+        print("> Encrypting the cost column...")
+        df['cost'] = df['cost'].apply(lambda x: encode_cipher_json(x, public_key))
 
     # If df size of one chunk in MiB is > 4MiB,
     # we need to split the dataset into more chunks that will be processed by the same number of workers previously defined
@@ -77,10 +126,6 @@ def execute(dataset, number_workers, max_mib_chunk_size=4):
 
     print(f"> Workload for each worker: \t\t\t{workload_for_each_worker} chunks/worker")
 
-    # Encrypt the cost column using the Paillier cryptosystem
-    #public_key, private_key = paillier.generate_paillier_keypair()
-    #df['cost'] = df['cost'].apply(lambda x: public_key.encrypt(x))
-
     # Get array of array of indexes for each worker and send the corresponding chunks to the storage backend
     indexes_iterdata = []
     for n in range(0, number_workers):
@@ -106,14 +151,17 @@ def execute(dataset, number_workers, max_mib_chunk_size=4):
     start_time = time.time()
 
     # Perform the parallel reduction
-    futures = fexec.map_reduce(map, indexes_iterdata, reduce)
+    futures = fexec.map_reduce(map, indexes_iterdata, reduce, extra_args=(encryption, "" if not encryption else int_to_base64(public_key.n)))
     result_df = fexec.get_result(futures)
 
     # Get the workers' execution time
     execution_time = time.time() - start_time
     
-    # Decrypt the cost
-    #result_df['cost'] = result_df['cost'].apply(lambda x: private_key.decrypt(x))
+    if encryption:
+        # Decrypt the cost
+        print("> Decrypting the cost column...")
+        result_df['cost'] = result_df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
+        result_df['cost'] = result_df['cost'].apply(lambda x: private_key.decrypt(x))
 
     # Filter the entries to find the customers who have spent more than $5k
     result_df = result_df[result_df['cost'] > 5000].reset_index(drop=True)
@@ -132,7 +180,7 @@ def main():
         size = dataset.stat().st_size / 1024 / 1024
         print('----------------------------------------')
         print(f'> Dataset: {dataset} | Size of the dataset: {size} MiB | Number of workers: 1')
-        _, execution_time_one_worker = execute(dataset, 1)
+        _, execution_time_one_worker = execute(dataset, 1, encryption=False)
         print(f'> Execution time: {execution_time_one_worker} seconds')
         print(f'> Speedup: 1')
         df_metrics = pd.concat([df_metrics, pd.DataFrame({'dataset': [dataset], 'size': [size], 'number_workers': [1], 'execution_time': [execution_time_one_worker], 'speedup': [1]})], ignore_index=True)
@@ -140,7 +188,7 @@ def main():
         for number_workers in [2, 4, 8, 16, 32]:
             print('----------------------------------------')
             print(f'> Dataset: {dataset} | Size of the dataset: {size} MiB | Number of workers: {number_workers}')
-            _, execution_time = execute(dataset, number_workers)
+            _, execution_time = execute(dataset, number_workers, encryption=False)
             print(f'> Execution time: {execution_time} seconds')
             speedup = execution_time_one_worker / execution_time
             print(f'> Speedup: {speedup}')
