@@ -7,15 +7,26 @@ import matplotlib.pyplot as plt
 import itertools
 import time
 import json
+import argparse
 
 bucket_name = lithops.Storage().bucket
 print(f"> Bucket name: {bucket_name}")
 key = 'dataframe'
 
+def groupby_sum_for_cipher(df, group_col, sum_col):
+    result = {}
+    for _, row in df.iterrows():
+        group = row[group_col]
+        cost = row[sum_col]
+        if group in result:
+            result[group] += cost
+        else:
+            result[group] = cost
+    return pd.DataFrame({group_col: list(result.keys()), sum_col: list(result.values())})
+
 def map(indexes, encryption, n_public_key, storage):
     encrypt_data = {"encryption": encryption, "n_public_key": n_public_key}
     if encrypt_data["encryption"]:
-        print(f"> Map function called with n_public_key: {encrypt_data['n_public_key']}")
         import phe
         public_key = paillier.PaillierPublicKey(n=base64_to_int(encrypt_data['n_public_key']))
     subkeys = []
@@ -23,15 +34,13 @@ def map(indexes, encryption, n_public_key, storage):
         # Get the dataset from the storage backend (less than 4MiB to avoid MemoryError (IBM Cloud))
         df = pd.read_json(storage.get_object(bucket_name, f"{key}_{id}", stream=True), orient='split', dtype={'customer_id': int, 'cost': str} if encrypt_data["encryption"] else None)
         if encrypt_data["encryption"]:
-            print(df)
             # Get the Paillier cipher for the cost column
             df['cost'] = df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
-            print(df)
-            print(df[0]["cost"] + df[1]["cost"])
         # Compute the sum of the cost column for each customer for the current chunk
-        df = df.groupby("customer_id", as_index=False).sum("cost")
-        if encrypt_data["encryption"]:
-            print(df)
+        if not encrypt_data["encryption"]:
+            df = df.groupby("customer_id", as_index=False).sum("cost")
+        else:
+            df = groupby_sum_for_cipher(df, "customer_id", "cost")
             df['cost'] = df['cost'].apply(lambda x: get_json_for_cipher(x))
         # Save the result to the storage backend
         subkey = f"map_{key}_{id}"
@@ -51,10 +60,11 @@ def reduce(results, storage):
     if encrypt_data["encryption"]:
         # Get the Paillier cipher for the cost column
         df['cost'] = df['cost'].apply(lambda x: decode_cipher_json(x, public_key))
-        print(df)
     # Compute the sum of the cost column for each customer for the entire dataset
-    df = df.groupby("customer_id", as_index=False).sum("cost")
-    if encrypt_data["encryption"]:
+    if not encrypt_data["encryption"]:
+        df = df.groupby("customer_id", as_index=False).sum("cost")
+    else:
+        df = groupby_sum_for_cipher(df, "customer_id", "cost")
         df['cost'] = df['cost'].apply(lambda x: get_json_for_cipher(x))
     return df
 
@@ -174,13 +184,21 @@ def execute(dataset, number_workers, max_mib_chunk_size=4, encryption=False):
     return result_df['customer_id'], execution_time
 
 def main():
+    # Get the arguments from the command line
+    parser = argparse.ArgumentParser(
+                    prog = 'Parallel Reduction',
+                    description = 'Parallel Reduction using Lithops and MapReduce, with or without Paillier encryption')
+    parser.add_argument('--encrypt', action='store_true', default=False,
+                        help='If set, the cost column will be encrypted using the Paillier cryptosystem before performing the parallel reduction.')
+    args = parser.parse_args()
+
     df_metrics = pd.DataFrame(columns=['dataset', 'size', 'number_workers', 'execution_time', 'speedup'])
     # For each dataset, we process it and measure the execution time of map_reduce function between 1 worker and n workers
-    for dataset in [pathlib.Path('datasets/store_sales_SF0_5.csv'), pathlib.Path('datasets/store_sales_SF0_1.csv'), pathlib.Path('datasets/store_sales_SF1.csv')]:
+    for dataset in [pathlib.Path('datasets/store_sales_SF0_1.csv'), pathlib.Path('datasets/store_sales_SF0_5.csv'), pathlib.Path('datasets/store_sales_SF1.csv')]:
         size = dataset.stat().st_size / 1024 / 1024
         print('----------------------------------------')
         print(f'> Dataset: {dataset} | Size of the dataset: {size} MiB | Number of workers: 1')
-        _, execution_time_one_worker = execute(dataset, 1, encryption=False)
+        _, execution_time_one_worker = execute(dataset, 1, encryption=args.encrypt)
         print(f'> Execution time: {execution_time_one_worker} seconds')
         print(f'> Speedup: 1')
         df_metrics = pd.concat([df_metrics, pd.DataFrame({'dataset': [dataset], 'size': [size], 'number_workers': [1], 'execution_time': [execution_time_one_worker], 'speedup': [1]})], ignore_index=True)
@@ -188,7 +206,7 @@ def main():
         for number_workers in [2, 4, 8, 16, 32]:
             print('----------------------------------------')
             print(f'> Dataset: {dataset} | Size of the dataset: {size} MiB | Number of workers: {number_workers}')
-            _, execution_time = execute(dataset, number_workers, encryption=False)
+            _, execution_time = execute(dataset, number_workers, encryption=args.encrypt)
             print(f'> Execution time: {execution_time} seconds')
             speedup = execution_time_one_worker / execution_time
             print(f'> Speedup: {speedup}')

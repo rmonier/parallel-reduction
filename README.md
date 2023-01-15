@@ -26,6 +26,11 @@ pipenv run reduct
 
 This will run the analysis of the execution time of the parallel reduction algorithm depending on the number of workers. It will save the results in the `metrics` folder and show a plot of the results for each dataset.
 
+To encrypt the cost column using the Paillier cryptosystem before performing the parallel reduction, add the `--encrypt` flag:
+```sh
+pipenv run reduct --encrypt
+```
+
 ## Credits
 
 Romain Monier [ [GitHub](https://github.com/rmonier) ] – Developer
